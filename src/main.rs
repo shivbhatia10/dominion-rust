@@ -229,6 +229,29 @@ impl Card for Action {
     }
 }
 
+fn card_name_to_card(card_name: &str) -> Option<Box<dyn Card>> {
+    match card_name {
+        "Copper" => Some(Box::new(Treasure::Copper)),
+        "Silver" => Some(Box::new(Treasure::Silver)),
+        "Gold" => Some(Box::new(Treasure::Gold)),
+        "Estate" => Some(Box::new(Victory::Estate)),
+        "Duchy" => Some(Box::new(Victory::Duchy)),
+        "Province" => Some(Box::new(Victory::Province)),
+        "Curse" => Some(Box::new(Curse::Curse)),
+        "Moat" => Some(Box::new(Action::Moat)),
+        "Village" => Some(Box::new(Action::Village)),
+        "Militia" => Some(Box::new(Action::Militia)),
+        "Smithy" => Some(Box::new(Action::Smithy)),
+        "Remodel" => Some(Box::new(Action::Remodel)),
+        "Festival" => Some(Box::new(Action::Festival)),
+        "Sentry" => Some(Box::new(Action::Sentry)),
+        "Market" => Some(Box::new(Action::Market)),
+        "Laboratory" => Some(Box::new(Action::Laboratory)),
+        "Artisan" => Some(Box::new(Action::Artisan)),
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 struct Player {
     index: usize,
@@ -315,6 +338,14 @@ impl Player {
             })
     }
 
+    fn get_card_from_hand(&mut self, card_index: usize) -> Result<&Box<dyn Card>, GameError> {
+        if card_index >= self.hand.len() {
+            Err(GameError::CardNotFound("Index out of bounds".to_owned()))
+        } else {
+            Ok(self.hand.get(card_index).unwrap())
+        }
+    }
+
     fn remove_card_from_hand(&mut self, card_index: usize) -> Result<Box<dyn Card>, GameError> {
         if card_index >= self.hand.len() {
             Err(GameError::CardNotFound("Index out of bounds".to_owned()))
@@ -324,7 +355,7 @@ impl Player {
     }
 
     fn play_card(&mut self, card: Box<dyn Card>) {
-        self.hand.push(card);
+        self.played.push(card);
     }
 
     fn end_turn(&mut self) {
@@ -387,6 +418,17 @@ impl Supply {
             Err(GameError::CardNotFoundInSupply(card_name.to_owned()))
         }
     }
+
+    fn num_empty_supply_piles(&self) -> u8 {
+        self.treasures.values().filter(|&count| *count == 0).count() as u8
+            + self.victories.values().filter(|&count| *count == 0).count() as u8
+            + self.actions.values().filter(|&count| *count == 0).count() as u8
+            + self.curses.values().filter(|&count| *count == 0).count() as u8
+    }
+
+    fn check_game_over(&mut self) -> bool {
+        self.victories["Province"] == 0 || self.num_empty_supply_piles() >= 3
+    }
 }
 
 #[derive(Debug)]
@@ -413,15 +455,34 @@ struct Game {
     supply: Supply,
     curr_player_index: usize,
     game_phase: GamePhase,
+    winner: Option<usize>,
 }
 
 impl Debug for Game {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Current player index: {:?}\nGame phase: {:?}\nSupply: {:#?}\nCurrent player hand: {:#?}",
-            self.curr_player_index, self.game_phase, self.supply, self.current_player_read_only().hand
-        )
+        f.write_fmt(format_args!("Current player: {}\n", self.curr_player_index))?;
+        f.write_fmt(format_args!(
+            "Actions: {}\n",
+            self.current_player_read_only().actions
+        ))?;
+        f.write_fmt(format_args!(
+            "Buys: {}\n",
+            self.current_player_read_only().buys
+        ))?;
+        f.write_fmt(format_args!(
+            "Coins: {}\n",
+            self.current_player_read_only().coins
+        ))?;
+        f.write_fmt(format_args!("Current phase: {:?}\n", self.game_phase))?;
+        f.write_fmt(format_args!("Supply: {:#?}\n", self.supply))?;
+        f.write_fmt(format_args!(
+            "Current player hand: {:#?}\n",
+            self.current_player_read_only().hand
+        ))?;
+        f.write_fmt(format_args!(
+            "Current player played cards: {:#?}\n",
+            self.current_player_read_only().played
+        ))
     }
 }
 
@@ -439,14 +500,14 @@ impl Game {
             actions: HashMap::from([
                 (Moat.name().to_owned(), 10),
                 (Village.name().to_owned(), 10),
-                (Militia.name().to_owned(), 10),
+                // (Militia.name().to_owned(), 10),
                 (Smithy.name().to_owned(), 10),
-                (Remodel.name().to_owned(), 10),
+                // (Remodel.name().to_owned(), 10),
                 (Festival.name().to_owned(), 10),
-                (Sentry.name().to_owned(), 10),
+                // (Sentry.name().to_owned(), 10),
                 (Market.name().to_owned(), 10),
                 (Laboratory.name().to_owned(), 10),
-                (Artisan.name().to_owned(), 10),
+                // (Artisan.name().to_owned(), 10),
             ]),
             victories: HashMap::from([
                 (Province.name().to_owned(), 10),
@@ -461,6 +522,7 @@ impl Game {
             supply,
             curr_player_index: (0..num_players).choose(&mut rng()).unwrap(),
             game_phase: GamePhase::ActionPhase,
+            winner: None,
         }
     }
 
@@ -479,12 +541,17 @@ impl Game {
         match (&self.game_phase, game_move) {
             // ACTION PHASE
             (GamePhase::ActionPhase, GameMove::PlayCard { card_index }) => {
-                let card_to_play = self.current_player().remove_card_from_hand(card_index)?;
-                match card_to_play.card_type() {
+                match self
+                    .current_player()
+                    .get_card_from_hand(card_index)?
+                    .card_type()
+                {
                     CardType::Treasure => Err(GameError::InvalidMove(
                         "Cannot play treasure in action phase".to_owned(),
                     )),
                     CardType::Action => {
+                        let card_to_play =
+                            self.current_player().remove_card_from_hand(card_index)?;
                         if self.current_player_read_only().actions == 0 {
                             return Err(GameError::InvalidMove("No actions left".to_owned()));
                         }
@@ -512,11 +579,17 @@ impl Game {
 
             // TREASURE PHASE
             (GamePhase::TreasurePhase, GameMove::PlayCard { card_index }) => {
-                let card_to_play = self.current_player().remove_card_from_hand(card_index)?;
-                match card_to_play.card_type() {
+                match self
+                    .current_player()
+                    .get_card_from_hand(card_index)?
+                    .card_type()
+                {
                     CardType::Treasure => {
+                        let card_to_play =
+                            self.current_player().remove_card_from_hand(card_index)?;
                         self.current_player().coins += card_to_play.as_treasure()?.value();
                         self.current_player().play_card(card_to_play);
+                        println!("YES!!!");
                         Ok(())
                     }
                     CardType::Action => Err(GameError::InvalidMove(
@@ -617,14 +690,145 @@ impl Game {
         self.current_player().end_turn();
         self.curr_player_index = (self.curr_player_index + 1) % self.players.len();
         self.game_phase = GamePhase::ActionPhase;
+        if self.supply.check_game_over() {
+            let winner = self
+                .players
+                .iter()
+                .max_by_key(|p| p.get_victory_points())
+                .unwrap();
+            println!("Game over! Player {} wins!", winner.index);
+            self.winner = Some(winner.index);
+        }
         Ok(())
     }
 }
 
-fn main() -> Result<(), GameError> {
+use std::io::{self, Write};
+
+fn main() {
+    // Initialize your game
     let mut game = Game::initialise_game(2);
-    println!("{:#?}", game);
-    game.accept_move(0, GameMove::PlayCard { card_index: 0 })?;
-    println!("{:#?}", game);
-    Ok(())
+
+    loop {
+        // Display current game state
+        println!("{:#?}", game);
+
+        // Prompt for input
+        print!("> ");
+        io::stdout().flush().unwrap(); // Ensure the prompt is displayed before reading input
+
+        // Read input
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read line");
+
+        // Trim whitespace
+        let input = input.trim();
+
+        // Check for exit command
+        if input.eq_ignore_ascii_case("quit") || input.eq_ignore_ascii_case("exit") {
+            println!("Thanks for playing!");
+            break;
+        }
+
+        // Process the command
+        process_command(&mut game, input);
+    }
+}
+
+fn process_command(game: &mut Game, command: &str) {
+    // Split command into parts
+    let parts: Vec<&str> = command.split_whitespace().collect();
+
+    if parts.is_empty() {
+        println!("Please enter a command.");
+        return;
+    }
+
+    match parts[0].to_lowercase().as_str() {
+        "play" => {
+            if parts.len() < 2 {
+                println!("Usage: play <card_index>");
+                return;
+            }
+
+            // Parse card index
+            match parts[1].parse::<usize>() {
+                Ok(card_index) => {
+                    // Create a play card move
+                    let game_move = GameMove::PlayCard { card_index };
+
+                    // Execute the move
+                    match game.accept_move(game.curr_player_index, game_move) {
+                        Ok(_) => println!("Card played successfully."),
+                        Err(e) => println!("Error: {}", e),
+                    }
+                }
+                Err(_) => println!("Invalid card index. Please enter a number."),
+            }
+        }
+        "buy" => {
+            if parts.len() < 2 {
+                println!("Usage: buy <card_name>");
+                return;
+            }
+
+            // Join the rest of the parts as the card name
+            let card_name = parts[1..].join(" ");
+
+            // Create a buy card move (you'd need to implement this move)
+            let game_move = GameMove::BuyCard {
+                card: card_name_to_card(&card_name).unwrap(),
+            };
+
+            // Execute the move
+            match game.accept_move(game.curr_player_index, game_move) {
+                Ok(_) => println!("Card bought successfully."),
+                Err(e) => println!("Error: {}", e),
+            }
+        }
+        "end" => {
+            if parts.len() > 1 {
+                if parts[1] == "turn" {
+                    // End turn move
+                    let game_move = GameMove::EndTurn;
+
+                    match game.accept_move(game.curr_player_index, game_move) {
+                        Ok(_) => println!("Turn ended."),
+                        Err(e) => println!("Error: {}", e),
+                    }
+                } else if parts[1] == "actions" {
+                    // End actions move
+                    let game_move = GameMove::EndActions;
+
+                    match game.accept_move(game.curr_player_index, game_move) {
+                        Ok(_) => println!("Actions ended."),
+                        Err(e) => println!("Error: {}", e),
+                    }
+                } else if parts[1] == "treasures" {
+                    // End treasures move
+                    let game_move = GameMove::EndTreasures;
+
+                    match game.accept_move(game.curr_player_index, game_move) {
+                        Ok(_) => println!("Treasures ended."),
+                        Err(e) => println!("Error: {}", e),
+                    }
+                } else {
+                    println!("Did you mean 'end turn', 'end actions', or 'end treasures'?");
+                }
+            }
+        }
+        "help" => {
+            println!("Available commands:");
+            println!("  play <card_index> - Play a card from your hand");
+            println!("  buy <card_name>   - Buy a card from the supply");
+            println!("  end actions       - End actions");
+            println!("  end treasures     - End treasures");
+            println!("  end turn          - End your turn");
+            println!("  help              - Show this help message");
+            println!("  quit              - Exit the game");
+        }
+        _ => println!("Unknown command. Type 'help' for available commands."),
+    }
 }
