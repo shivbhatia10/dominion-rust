@@ -1,9 +1,35 @@
-use std::{any::Any, fmt::Debug, mem::take};
+use std::{any::Any, collections::HashMap, fmt::Debug, mem::take};
 
 use rand::{
     rng,
     seq::{IteratorRandom, SliceRandom},
 };
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum GameError {
+    #[error("Card not found in hand: {0}")]
+    CardNotFound(String),
+
+    #[error("Card not found in supply: {0}")]
+    CardNotFoundInSupply(String),
+
+    #[error("Card supply depleted: {0}")]
+    CardSupplyDepleted(String),
+
+    #[error("Not enough money: required {required}, had {available}")]
+    NotEnoughMoney { required: u32, available: u32 },
+
+    #[error("Invalid move: {0}")]
+    InvalidMove(String),
+
+    #[error("Failed to downcast card type: {0}")]
+    FailedToDowncast(String),
+
+    #[error("Supply pile empty: {0}")]
+    EmptySupply(String),
+}
 
 fn shuffle_vec_inplace<T>(vec: &mut Vec<T>) {
     vec.shuffle(&mut rng());
@@ -300,39 +326,73 @@ impl Player {
     fn play_card(&mut self, card: Box<dyn Card>) {
         self.hand.push(card);
     }
+
+    fn end_turn(&mut self) {
+        self.discard_hand();
+        self.clear_played();
+        self.actions = 1;
+        self.buys = 1;
+        self.coins = 0;
+        self.draw(5);
+    }
+
+    fn discard_hand(&mut self) {
+        let hand = take(&mut self.hand);
+        self.discard.extend(hand);
+    }
+
+    fn clear_played(&mut self) {
+        let played = take(&mut self.played);
+        self.discard.extend(played);
+    }
 }
 
 #[derive(Debug)]
 struct Supply {
-    treasures: Vec<(u32, Box<dyn Card>)>,
-    victories: Vec<(u32, Box<dyn Card>)>,
-    actions: Vec<(u32, Box<dyn Card>)>,
+    // Maps from card name to quantity
+    treasures: HashMap<String, u8>,
+    actions: HashMap<String, u8>,
+    victories: HashMap<String, u8>,
+    curses: HashMap<String, u8>,
 }
 
-use thiserror::Error;
+impl Supply {
+    fn take_card(&mut self, card_to_take: Box<dyn Card>) -> Result<(), GameError> {
+        match card_to_take.card_type() {
+            CardType::Treasure => {
+                Supply::take_from_supply_pile(&mut self.treasures, card_to_take.name())
+            }
+            CardType::Victory => {
+                Supply::take_from_supply_pile(&mut self.victories, card_to_take.name())
+            }
+            CardType::Action => {
+                Supply::take_from_supply_pile(&mut self.actions, card_to_take.name())
+            }
+            CardType::Curse => Supply::take_from_supply_pile(&mut self.curses, card_to_take.name()),
+        }
+    }
 
-#[derive(Debug, Error)]
-pub enum GameError {
-    #[error("Card not found in hand: {0}")]
-    CardNotFound(String),
-
-    #[error("Not enough money: required {required}, had {available}")]
-    NotEnoughMoney { required: u32, available: u32 },
-
-    #[error("Invalid move: {0}")]
-    InvalidMove(String),
-
-    #[error("Failed to downcast card type: {0}")]
-    FailedToDowncast(String),
-
-    #[error("Supply pile empty: {0}")]
-    EmptySupply(String),
+    fn take_from_supply_pile(
+        pile: &mut HashMap<String, u8>,
+        card_name: &str,
+    ) -> Result<(), GameError> {
+        if let Some(count) = pile.get_mut(card_name) {
+            if *count <= 0 {
+                Err(GameError::CardSupplyDepleted(card_name.to_owned()))
+            } else {
+                *count -= 1;
+                Ok(())
+            }
+        } else {
+            Err(GameError::CardNotFoundInSupply(card_name.to_owned()))
+        }
+    }
 }
 
 #[derive(Debug)]
 enum GameMove {
     PlayCard {
-        curr_player_index: usize,
+        player_index: usize,
         card_index: usize,
     },
     BuyCard {
@@ -346,6 +406,9 @@ enum GameMove {
     EndActions {
         player_index: usize,
     },
+    EndTreasures {
+        player_index: usize,
+    },
     EndTurn {
         player_index: usize,
     },
@@ -355,8 +418,9 @@ enum GameMove {
 enum GamePhase {
     // Regular turn phases
     ActionPhase,
+    TreasurePhase,
     BuyPhase,
-    CleanupPhase,
+    // Will add more for special phases
 }
 
 #[derive(Debug)]
@@ -369,29 +433,33 @@ struct Game {
 
 impl Game {
     fn initialise_game(num_players: usize) -> Self {
+        use Action::*;
+        use Treasure::*;
+        use Victory::*;
         let supply = Supply {
-            treasures: vec![
-                (60, Box::new(Treasure::Copper)),
-                (40, Box::new(Treasure::Silver)),
-                (30, Box::new(Treasure::Gold)),
-            ],
-            victories: vec![
-                (8, Box::new(Victory::Estate)),
-                (8, Box::new(Victory::Duchy)),
-                (8, Box::new(Victory::Province)),
-            ],
-            actions: vec![
-                (10, Box::new(Action::Moat)),
-                (10, Box::new(Action::Village)),
-                (10, Box::new(Action::Militia)),
-                (10, Box::new(Action::Smithy)),
-                (10, Box::new(Action::Remodel)),
-                (10, Box::new(Action::Festival)),
-                (10, Box::new(Action::Sentry)),
-                (10, Box::new(Action::Market)),
-                (10, Box::new(Action::Laboratory)),
-                (10, Box::new(Action::Artisan)),
-            ],
+            treasures: HashMap::from([
+                (Copper.name().to_owned(), 60),
+                (Silver.name().to_owned(), 40),
+                (Gold.name().to_owned(), 30),
+            ]),
+            actions: HashMap::from([
+                (Moat.name().to_owned(), 10),
+                (Village.name().to_owned(), 10),
+                (Militia.name().to_owned(), 10),
+                (Smithy.name().to_owned(), 10),
+                (Remodel.name().to_owned(), 10),
+                (Festival.name().to_owned(), 10),
+                (Sentry.name().to_owned(), 10),
+                (Market.name().to_owned(), 10),
+                (Laboratory.name().to_owned(), 10),
+                (Artisan.name().to_owned(), 10),
+            ]),
+            victories: HashMap::from([
+                (Province.name().to_owned(), 10),
+                (Duchy.name().to_owned(), 10),
+                (Estate.name().to_owned(), 10),
+            ]),
+            curses: HashMap::from([(Curse::Curse.name().to_owned(), 10)]),
         };
 
         Game {
@@ -402,50 +470,149 @@ impl Game {
         }
     }
 
+    fn current_player(&mut self) -> &mut Player {
+        &mut self.players[self.curr_player_index]
+    }
+
+    fn check_is_current_player(&self, player_index: usize) -> Result<(), GameError> {
+        if player_index != self.curr_player_index {
+            return Err(GameError::InvalidMove("Wrong player index".to_owned()));
+        }
+        Ok(())
+    }
+
     fn accept_move(&mut self, game_move: GameMove) -> Result<(), GameError> {
         match (&self.game_phase, game_move) {
+            // ACTION PHASE
             (
                 GamePhase::ActionPhase,
                 GameMove::PlayCard {
-                    curr_player_index,
+                    player_index,
                     card_index,
                 },
             ) => {
-                if curr_player_index != self.curr_player_index {
-                    return Err(GameError::InvalidMove("Wrong player index".to_owned()));
-                }
-                let card_to_play =
-                    self.players[self.curr_player_index].remove_card_from_hand(card_index)?;
+                self.check_is_current_player(player_index)?;
+
+                let card_to_play = self.current_player().remove_card_from_hand(card_index)?;
                 match card_to_play.card_type() {
-                    CardType::Treasure => {
-                        self.end_actions()?;
-                        self.players[self.curr_player_index].coins +=
-                            card_to_play.as_treasure()?.value();
-                        self.players[self.curr_player_index].play_card(card_to_play);
-                        Ok(())
+                    CardType::Treasure => Err(GameError::InvalidMove(
+                        "Cannot play treasure in action phase".to_owned(),
+                    )),
+                    CardType::Action => {
+                        if self.current_player().actions == 0 {
+                            return Err(GameError::InvalidMove("No actions left".to_owned()));
+                        }
+                        self.current_player().actions -= 1;
+                        let action = card_to_play.as_action()?;
+
+                        // TODO: Actually handle the action card
+                        todo!()
                     }
-                    CardType::Action => todo!(),
                     CardType::Victory => Err(GameError::InvalidMove(
                         "Cannot play victory card".to_owned(),
                     )),
                     CardType::Curse => Err(GameError::InvalidMove("Cannot play curse".to_owned())),
                 }
             }
-            _ => Err(GameError::InvalidMove("Invalid move".to_owned())),
+            (GamePhase::ActionPhase, GameMove::EndActions { player_index }) => {
+                self.check_is_current_player(player_index)?;
+                self.current_player().actions = 0;
+                self.action_to_treasure_phase()
+            }
+
+            // TREASURE PHASE
+            (
+                GamePhase::TreasurePhase,
+                GameMove::PlayCard {
+                    player_index,
+                    card_index,
+                },
+            ) => {
+                self.check_is_current_player(player_index)?;
+                let card_to_play = self.current_player().remove_card_from_hand(card_index)?;
+                match card_to_play.card_type() {
+                    CardType::Treasure => {
+                        self.current_player().coins += card_to_play.as_treasure()?.value();
+                        self.current_player().play_card(card_to_play);
+                        Ok(())
+                    }
+                    CardType::Action => Err(GameError::InvalidMove(
+                        "Cannot play action card in treasure phase".to_owned(),
+                    )),
+                    CardType::Victory => Err(GameError::InvalidMove(
+                        "Cannot play victory card".to_owned(),
+                    )),
+                    CardType::Curse => Err(GameError::InvalidMove("Cannot play curse".to_owned())),
+                }
+            }
+            (GamePhase::TreasurePhase, GameMove::EndTreasures { player_index }) => {
+                self.check_is_current_player(player_index)?;
+                self.treasure_to_buy_phase()
+            }
+
+            // BUY PHASE
+            (GamePhase::BuyPhase, GameMove::BuyCard { player_index, card }) => {
+                self.check_is_current_player(player_index)?;
+                let cost = card.cost();
+                if self.current_player().coins < cost {
+                    return Err(GameError::NotEnoughMoney {
+                        required: cost,
+                        available: self.current_player().coins,
+                    });
+                }
+                self.current_player().coins -= cost;
+                self.supply.take_card(card)?;
+                Ok(())
+            }
+
+            (_, GameMove::EndTurn { player_index }) => {
+                self.check_is_current_player(player_index)?;
+                self.end_turn()?;
+                Ok(())
+            }
+
+            _ => Err(GameError::InvalidMove(
+                "Invalid move for given game phase".to_owned(),
+            )),
         }
     }
 
-    fn end_actions(&mut self) -> Result<(), GameError> {
+    // PHASE TRANSITIONS
+    fn action_to_treasure_phase(&mut self) -> Result<(), GameError> {
         if let GamePhase::ActionPhase = self.game_phase {
+            self.game_phase = GamePhase::TreasurePhase;
+            Ok(())
+        } else {
+            Err(GameError::InvalidMove(
+                "Not in action phase, cannot enter treasure phase".to_owned(),
+            ))
+        }
+    }
+    fn treasure_to_buy_phase(&mut self) -> Result<(), GameError> {
+        if let GamePhase::TreasurePhase = self.game_phase {
             self.game_phase = GamePhase::BuyPhase;
             Ok(())
         } else {
-            Err(GameError::InvalidMove("Not in action phase".to_owned()))
+            Err(GameError::InvalidMove(
+                "Not in treasure phase, cannot enter buy phase".to_owned(),
+            ))
         }
+    }
+    fn end_turn(&mut self) -> Result<(), GameError> {
+        self.current_player().end_turn();
+        self.curr_player_index = (self.curr_player_index + 1) % self.players.len();
+        self.game_phase = GamePhase::ActionPhase;
+        Ok(())
     }
 }
 
-fn main() {
-    let game = Game::initialise_game(2);
+fn main() -> Result<(), GameError> {
+    let mut game = Game::initialise_game(2);
     println!("{:#?}", game);
+    game.accept_move(GameMove::PlayCard {
+        player_index: 0,
+        card_index: 0,
+    })?;
+    println!("{:#?}", game);
+    Ok(())
 }
