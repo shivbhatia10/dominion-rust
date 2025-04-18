@@ -391,27 +391,12 @@ impl Supply {
 
 #[derive(Debug)]
 enum GameMove {
-    PlayCard {
-        player_index: usize,
-        card_index: usize,
-    },
-    BuyCard {
-        player_index: usize,
-        card: Box<dyn Card>,
-    },
-    DiscardCard {
-        player_index: usize,
-        card: Box<dyn Card>,
-    },
-    EndActions {
-        player_index: usize,
-    },
-    EndTreasures {
-        player_index: usize,
-    },
-    EndTurn {
-        player_index: usize,
-    },
+    PlayCard { card_index: usize },
+    BuyCard { card: Box<dyn Card> },
+    DiscardCard { card: Box<dyn Card> },
+    EndActions,
+    EndTreasures,
+    EndTurn,
 }
 
 #[derive(Debug)]
@@ -423,12 +408,21 @@ enum GamePhase {
     // Will add more for special phases
 }
 
-#[derive(Debug)]
 struct Game {
     players: Vec<Player>,
     supply: Supply,
     curr_player_index: usize,
     game_phase: GamePhase,
+}
+
+impl Debug for Game {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Current player index: {:?}\nGame phase: {:?}\nSupply: {:#?}\nCurrent player hand: {:#?}",
+            self.curr_player_index, self.game_phase, self.supply, self.current_player_read_only().hand
+        )
+    }
 }
 
 impl Game {
@@ -474,39 +468,36 @@ impl Game {
         &mut self.players[self.curr_player_index]
     }
 
-    fn check_is_current_player(&self, player_index: usize) -> Result<(), GameError> {
+    fn current_player_read_only(&self) -> &Player {
+        &self.players[self.curr_player_index]
+    }
+
+    fn accept_move(&mut self, player_index: usize, game_move: GameMove) -> Result<(), GameError> {
         if player_index != self.curr_player_index {
             return Err(GameError::InvalidMove("Wrong player index".to_owned()));
         }
-        Ok(())
-    }
-
-    fn accept_move(&mut self, game_move: GameMove) -> Result<(), GameError> {
         match (&self.game_phase, game_move) {
             // ACTION PHASE
-            (
-                GamePhase::ActionPhase,
-                GameMove::PlayCard {
-                    player_index,
-                    card_index,
-                },
-            ) => {
-                self.check_is_current_player(player_index)?;
-
+            (GamePhase::ActionPhase, GameMove::PlayCard { card_index }) => {
                 let card_to_play = self.current_player().remove_card_from_hand(card_index)?;
                 match card_to_play.card_type() {
                     CardType::Treasure => Err(GameError::InvalidMove(
                         "Cannot play treasure in action phase".to_owned(),
                     )),
                     CardType::Action => {
-                        if self.current_player().actions == 0 {
+                        if self.current_player_read_only().actions == 0 {
                             return Err(GameError::InvalidMove("No actions left".to_owned()));
                         }
                         self.current_player().actions -= 1;
                         let action = card_to_play.as_action()?;
+                        self.current_player().play_card(Box::new(action.clone()));
 
-                        // TODO: Actually handle the action card
-                        todo!()
+                        self.handle_action(action)?;
+
+                        if self.current_player_read_only().actions == 0 {
+                            self.action_to_treasure_phase()?
+                        }
+                        Ok(())
                     }
                     CardType::Victory => Err(GameError::InvalidMove(
                         "Cannot play victory card".to_owned(),
@@ -514,21 +505,13 @@ impl Game {
                     CardType::Curse => Err(GameError::InvalidMove("Cannot play curse".to_owned())),
                 }
             }
-            (GamePhase::ActionPhase, GameMove::EndActions { player_index }) => {
-                self.check_is_current_player(player_index)?;
+            (GamePhase::ActionPhase, GameMove::EndActions) => {
                 self.current_player().actions = 0;
                 self.action_to_treasure_phase()
             }
 
             // TREASURE PHASE
-            (
-                GamePhase::TreasurePhase,
-                GameMove::PlayCard {
-                    player_index,
-                    card_index,
-                },
-            ) => {
-                self.check_is_current_player(player_index)?;
+            (GamePhase::TreasurePhase, GameMove::PlayCard { card_index }) => {
                 let card_to_play = self.current_player().remove_card_from_hand(card_index)?;
                 match card_to_play.card_type() {
                     CardType::Treasure => {
@@ -545,28 +528,27 @@ impl Game {
                     CardType::Curse => Err(GameError::InvalidMove("Cannot play curse".to_owned())),
                 }
             }
-            (GamePhase::TreasurePhase, GameMove::EndTreasures { player_index }) => {
-                self.check_is_current_player(player_index)?;
-                self.treasure_to_buy_phase()
-            }
+            (GamePhase::TreasurePhase, GameMove::EndTreasures) => self.treasure_to_buy_phase(),
 
             // BUY PHASE
-            (GamePhase::BuyPhase, GameMove::BuyCard { player_index, card }) => {
-                self.check_is_current_player(player_index)?;
+            (GamePhase::BuyPhase, GameMove::BuyCard { card }) => {
                 let cost = card.cost();
-                if self.current_player().coins < cost {
+                if self.current_player_read_only().coins < cost {
                     return Err(GameError::NotEnoughMoney {
                         required: cost,
-                        available: self.current_player().coins,
+                        available: self.current_player_read_only().coins,
                     });
                 }
                 self.current_player().coins -= cost;
                 self.supply.take_card(card)?;
+                self.current_player().buys -= 1;
+                if self.current_player_read_only().buys == 0 {
+                    self.end_turn()?
+                }
                 Ok(())
             }
 
-            (_, GameMove::EndTurn { player_index }) => {
-                self.check_is_current_player(player_index)?;
+            (_, GameMove::EndTurn) => {
                 self.end_turn()?;
                 Ok(())
             }
@@ -575,6 +557,39 @@ impl Game {
                 "Invalid move for given game phase".to_owned(),
             )),
         }
+    }
+
+    fn handle_action(&mut self, action: &Action) -> Result<(), GameError> {
+        match action {
+            Action::Moat => {
+                self.current_player().draw(2);
+            }
+            Action::Village => {
+                self.current_player().actions += 2;
+                self.current_player().draw(1);
+            }
+            Action::Militia => todo!(),
+            Action::Smithy => {
+                self.current_player().draw(3);
+            }
+            Action::Remodel => todo!(),
+            Action::Festival => {
+                self.current_player().actions += 2;
+                self.current_player().buys += 1;
+            }
+            Action::Sentry => todo!(),
+            Action::Market => {
+                self.current_player().buys += 1;
+                self.current_player().actions += 1;
+                self.current_player().draw(1);
+            }
+            Action::Laboratory => {
+                self.current_player().actions += 1;
+                self.current_player().draw(2);
+            }
+            Action::Artisan => todo!(),
+        }
+        Ok(())
     }
 
     // PHASE TRANSITIONS
@@ -609,10 +624,7 @@ impl Game {
 fn main() -> Result<(), GameError> {
     let mut game = Game::initialise_game(2);
     println!("{:#?}", game);
-    game.accept_move(GameMove::PlayCard {
-        player_index: 0,
-        card_index: 0,
-    })?;
+    game.accept_move(0, GameMove::PlayCard { card_index: 0 })?;
     println!("{:#?}", game);
     Ok(())
 }
