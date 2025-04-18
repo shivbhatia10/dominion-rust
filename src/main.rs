@@ -1,6 +1,9 @@
-use std::{fmt::Debug, mem::take};
+use std::{any::Any, fmt::Debug, mem::take};
 
-use rand::{rng, seq::SliceRandom};
+use rand::{
+    rng,
+    seq::{IteratorRandom, SliceRandom},
+};
 
 fn shuffle_vec_inplace<T>(vec: &mut Vec<T>) {
     vec.shuffle(&mut rng());
@@ -18,6 +21,29 @@ trait Card: Debug {
     fn name(&self) -> &str;
     fn card_type(&self) -> CardType;
     fn cost(&self) -> u32;
+
+    fn as_any(&self) -> &dyn Any;
+
+    fn as_treasure(&self) -> Result<&Treasure, GameError> {
+        self.as_any()
+            .downcast_ref()
+            .ok_or(GameError::FailedToDowncast("Treasure".to_owned()))
+    }
+    fn as_action(&self) -> Result<&Action, GameError> {
+        self.as_any()
+            .downcast_ref()
+            .ok_or(GameError::FailedToDowncast("Action".to_owned()))
+    }
+    fn as_victory(&self) -> Result<&Victory, GameError> {
+        self.as_any()
+            .downcast_ref()
+            .ok_or(GameError::FailedToDowncast("Victory".to_owned()))
+    }
+    fn as_curse(&self) -> Result<&Curse, GameError> {
+        self.as_any()
+            .downcast_ref()
+            .ok_or(GameError::FailedToDowncast("Curse".to_owned()))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +51,16 @@ enum Treasure {
     Copper,
     Silver,
     Gold,
+}
+
+impl Treasure {
+    fn value(&self) -> u32 {
+        match self {
+            Treasure::Copper => 1,
+            Treasure::Silver => 2,
+            Treasure::Gold => 3,
+        }
+    }
 }
 
 impl Card for Treasure {
@@ -46,6 +82,10 @@ impl Card for Treasure {
             Treasure::Silver => 3,
             Treasure::Gold => 6,
         }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -76,6 +116,10 @@ impl Card for Victory {
             Victory::Province => 8,
         }
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +142,10 @@ impl Card for Curse {
         match self {
             Curse::Curse => 0,
         }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -149,6 +197,10 @@ impl Card for Action {
             Action::Artisan => 6,
         }
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -157,7 +209,12 @@ struct Player {
     hand: Vec<Box<dyn Card>>,
     deck: Vec<Box<dyn Card>>,
     discard: Vec<Box<dyn Card>>,
+    played: Vec<Box<dyn Card>>,
+    trashed: Vec<Box<dyn Card>>,
     last_discarded_card: Option<Box<dyn Card>>,
+    actions: u32,
+    buys: u32,
+    coins: u32,
 }
 
 impl Player {
@@ -167,7 +224,12 @@ impl Player {
             hand: Vec::new(),
             deck: Vec::new(),
             discard: Vec::new(),
+            played: Vec::new(),
+            trashed: Vec::new(),
             last_discarded_card: None,
+            actions: 1,
+            buys: 1,
+            coins: 0,
         };
 
         for _ in 0..7 {
@@ -208,12 +270,36 @@ impl Player {
 
         self.deck = new_deck;
     }
-}
 
-#[derive(Debug)]
-enum Phase {
-    Action { curr_player_index: u32 },
-    Buy { curr_player_index: u32 },
+    fn get_victory_points(&self) -> u32 {
+        self.hand
+            .iter()
+            .chain(self.deck.iter())
+            .chain(self.discard.iter())
+            .fold(0, |sum, card| {
+                if card.name() == "Estate" {
+                    sum + 1
+                } else if card.name() == "Duchy" {
+                    sum + 3
+                } else if card.name() == "Province" {
+                    sum + 6
+                } else {
+                    sum
+                }
+            })
+    }
+
+    fn remove_card_from_hand(&mut self, card_index: usize) -> Result<Box<dyn Card>, GameError> {
+        if card_index >= self.hand.len() {
+            Err(GameError::CardNotFound("Index out of bounds".to_owned()))
+        } else {
+            Ok(self.hand.remove(card_index))
+        }
+    }
+
+    fn play_card(&mut self, card: Box<dyn Card>) {
+        self.hand.push(card);
+    }
 }
 
 #[derive(Debug)]
@@ -223,11 +309,62 @@ struct Supply {
     actions: Vec<(u32, Box<dyn Card>)>,
 }
 
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum GameError {
+    #[error("Card not found in hand: {0}")]
+    CardNotFound(String),
+
+    #[error("Not enough money: required {required}, had {available}")]
+    NotEnoughMoney { required: u32, available: u32 },
+
+    #[error("Invalid move: {0}")]
+    InvalidMove(String),
+
+    #[error("Failed to downcast card type: {0}")]
+    FailedToDowncast(String),
+
+    #[error("Supply pile empty: {0}")]
+    EmptySupply(String),
+}
+
+#[derive(Debug)]
+enum GameMove {
+    PlayCard {
+        curr_player_index: usize,
+        card_index: usize,
+    },
+    BuyCard {
+        player_index: usize,
+        card: Box<dyn Card>,
+    },
+    DiscardCard {
+        player_index: usize,
+        card: Box<dyn Card>,
+    },
+    EndActions {
+        player_index: usize,
+    },
+    EndTurn {
+        player_index: usize,
+    },
+}
+
+#[derive(Debug)]
+enum GamePhase {
+    // Regular turn phases
+    ActionPhase,
+    BuyPhase,
+    CleanupPhase,
+}
+
 #[derive(Debug)]
 struct Game {
     players: Vec<Player>,
     supply: Supply,
-    phase: Phase,
+    curr_player_index: usize,
+    game_phase: GamePhase,
 }
 
 impl Game {
@@ -244,27 +381,66 @@ impl Game {
                 (8, Box::new(Victory::Province)),
             ],
             actions: vec![
+                (10, Box::new(Action::Moat)),
                 (10, Box::new(Action::Village)),
+                (10, Box::new(Action::Militia)),
                 (10, Box::new(Action::Smithy)),
+                (10, Box::new(Action::Remodel)),
+                (10, Box::new(Action::Festival)),
+                (10, Box::new(Action::Sentry)),
+                (10, Box::new(Action::Market)),
                 (10, Box::new(Action::Laboratory)),
+                (10, Box::new(Action::Artisan)),
             ],
         };
 
-        let mut players = Vec::new();
-        for i in 0..num_players {
-            players.push(Player::new(i));
-        }
-
-        // TODO: Choose this randomly
-        let first_player_index = 0;
-        let phase = Phase::Action {
-            curr_player_index: first_player_index,
-        };
-
         Game {
-            players,
+            players: (0..num_players).map(|i| Player::new(i)).collect(),
             supply,
-            phase,
+            curr_player_index: (0..num_players).choose(&mut rng()).unwrap(),
+            game_phase: GamePhase::ActionPhase,
+        }
+    }
+
+    fn accept_move(&mut self, game_move: GameMove) -> Result<(), GameError> {
+        match (&self.game_phase, game_move) {
+            (
+                GamePhase::ActionPhase,
+                GameMove::PlayCard {
+                    curr_player_index,
+                    card_index,
+                },
+            ) => {
+                if curr_player_index != self.curr_player_index {
+                    return Err(GameError::InvalidMove("Wrong player index".to_owned()));
+                }
+                let card_to_play =
+                    self.players[self.curr_player_index].remove_card_from_hand(card_index)?;
+                match card_to_play.card_type() {
+                    CardType::Treasure => {
+                        self.end_actions()?;
+                        self.players[self.curr_player_index].coins +=
+                            card_to_play.as_treasure()?.value();
+                        self.players[self.curr_player_index].play_card(card_to_play);
+                        Ok(())
+                    }
+                    CardType::Action => todo!(),
+                    CardType::Victory => Err(GameError::InvalidMove(
+                        "Cannot play victory card".to_owned(),
+                    )),
+                    CardType::Curse => Err(GameError::InvalidMove("Cannot play curse".to_owned())),
+                }
+            }
+            _ => Err(GameError::InvalidMove("Invalid move".to_owned())),
+        }
+    }
+
+    fn end_actions(&mut self) -> Result<(), GameError> {
+        if let GamePhase::ActionPhase = self.game_phase {
+            self.game_phase = GamePhase::BuyPhase;
+            Ok(())
+        } else {
+            Err(GameError::InvalidMove("Not in action phase".to_owned()))
         }
     }
 }
