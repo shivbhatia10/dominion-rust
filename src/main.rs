@@ -229,28 +229,30 @@ impl Card for Action {
     }
 }
 
-fn card_name_to_card(card_name: &str) -> Option<Box<dyn Card>> {
-    match card_name {
-        "Copper" => Some(Box::new(Treasure::Copper)),
-        "Silver" => Some(Box::new(Treasure::Silver)),
-        "Gold" => Some(Box::new(Treasure::Gold)),
-        "Estate" => Some(Box::new(Victory::Estate)),
-        "Duchy" => Some(Box::new(Victory::Duchy)),
-        "Province" => Some(Box::new(Victory::Province)),
-        "Curse" => Some(Box::new(Curse::Curse)),
-        "Moat" => Some(Box::new(Action::Moat)),
-        "Village" => Some(Box::new(Action::Village)),
-        "Militia" => Some(Box::new(Action::Militia)),
-        "Smithy" => Some(Box::new(Action::Smithy)),
-        "Remodel" => Some(Box::new(Action::Remodel)),
-        "Festival" => Some(Box::new(Action::Festival)),
-        "Sentry" => Some(Box::new(Action::Sentry)),
-        "Market" => Some(Box::new(Action::Market)),
-        "Laboratory" => Some(Box::new(Action::Laboratory)),
-        "Artisan" => Some(Box::new(Action::Artisan)),
-        _ => None,
+macro_rules! create_card_map {
+    ($(($enum_type:ident, $($variant:ident),+)),*) => {
+        fn card_name_to_card(card_name: &str) -> Option<Box<dyn Card>> {
+            $(
+                $(
+                    if card_name == $enum_type::$variant.name() {
+                        return Some(Box::new($enum_type::$variant));
+                    }
+                )+
+            )*
+            None
+        }
     }
 }
+
+create_card_map!(
+    (Treasure, Copper, Silver, Gold),
+    (Victory, Estate, Duchy, Province),
+    (Curse, Curse),
+    (
+        Action, Moat, Village, Militia, Smithy, Remodel, Festival, Sentry, Market, Laboratory,
+        Artisan
+    )
+);
 
 #[derive(Debug)]
 struct Player {
@@ -398,6 +400,10 @@ impl Player {
             .iter()
             .any(|card| card.card_type() == CardType::Treasure)
     }
+
+    fn add_to_discard(&mut self, card: Box<dyn Card>) {
+        self.discard.push(card);
+    }
 }
 
 #[derive(Debug)]
@@ -410,7 +416,7 @@ struct Supply {
 }
 
 impl Supply {
-    fn take_card(&mut self, card_to_take: Box<dyn Card>) -> Result<(), GameError> {
+    fn take_card(&mut self, card_to_take: &Box<dyn Card>) -> Result<(), GameError> {
         match card_to_take.card_type() {
             CardType::Treasure => {
                 Supply::take_from_supply_pile(&mut self.treasures, card_to_take.name())
@@ -497,6 +503,14 @@ impl Debug for Game {
         ))?;
         f.write_fmt(format_args!("Current phase: {:?}\n", self.game_phase))?;
         f.write_fmt(format_args!("Supply: {:#?}\n", self.supply))?;
+        f.write_fmt(format_args!(
+            "Current player deck: {:#?}\n",
+            self.current_player_read_only().deck
+        ))?;
+        f.write_fmt(format_args!(
+            "Current player discard: {:#?}\n",
+            self.current_player_read_only().discard
+        ))?;
         f.write_fmt(format_args!(
             "Current player hand: {:#?}\n",
             self.current_player_read_only().hand
@@ -589,7 +603,9 @@ impl Game {
 
                         self.handle_action(action)?;
 
-                        if self.current_player_read_only().actions == 0 {
+                        if self.current_player_read_only().actions == 0
+                            || !self.current_player_read_only().has_action_cards_in_hand()
+                        {
                             self.action_to_treasure_phase()?
                         }
                     }
@@ -620,6 +636,9 @@ impl Game {
                             self.current_player().remove_card_from_hand(card_index)?;
                         self.current_player().coins += card_to_play.as_treasure()?.value();
                         self.current_player().play_card(card_to_play);
+                        if !self.current_player_read_only().has_treasure_cards_in_hand() {
+                            self.treasure_to_buy_phase()?;
+                        }
                     }
                     CardType::Action => {
                         return Err(GameError::InvalidMove(
@@ -648,8 +667,9 @@ impl Game {
                     });
                 }
                 self.current_player().coins -= cost;
-                self.supply.take_card(card)?;
+                self.supply.take_card(&card)?;
                 self.current_player().buys -= 1;
+                self.current_player().add_to_discard(card);
                 if self.current_player_read_only().buys == 0 {
                     self.end_turn()?
                 }
