@@ -177,30 +177,71 @@ impl Card for Curse {
 
 #[derive(Debug, Clone)]
 enum Action {
+    // Cost 2
+    Cellar,
+    Chapel,
     Moat,
+
+    // Cost 3
+    Harbinger,
+    Merchant,
+    Vassal,
     Village,
+    Workshop,
+
+    // Cost 4
+    Bureaucrat,
+    Gardens,
     Militia,
-    Smithy,
+    Moneylender,
+    Poacher,
     Remodel,
+    Smithy,
+    ThroneRoom,
+
+    // Cost 5
+    Bandit,
+    CouncilRoom,
     Festival,
-    Sentry,
-    Market,
     Laboratory,
+    Library,
+    Market,
+    Mine,
+    Sentry,
+    Witch,
+
+    // Cost 6
     Artisan,
 }
 
 impl Card for Action {
     fn name(&self) -> &str {
         match self {
+            Action::Cellar => "Cellar",
+            Action::Chapel => "Chapel",
             Action::Moat => "Moat",
+            Action::Harbinger => "Harbinger",
+            Action::Merchant => "Merchant",
+            Action::Vassal => "Vassal",
             Action::Village => "Village",
+            Action::Workshop => "Workshop",
+            Action::Bureaucrat => "Bureaucrat",
+            Action::Gardens => "Gardens",
             Action::Militia => "Militia",
-            Action::Smithy => "Smithy",
+            Action::Moneylender => "Moneylender",
+            Action::Poacher => "Poacher",
             Action::Remodel => "Remodel",
+            Action::Smithy => "Smithy",
+            Action::ThroneRoom => "Throne Room",
+            Action::Bandit => "Bandit",
+            Action::CouncilRoom => "Council Room",
             Action::Festival => "Festival",
-            Action::Sentry => "Sentry",
-            Action::Market => "Market",
             Action::Laboratory => "Laboratory",
+            Action::Library => "Library",
+            Action::Market => "Market",
+            Action::Mine => "Mine",
+            Action::Sentry => "Sentry",
+            Action::Witch => "Witch",
             Action::Artisan => "Artisan",
         }
     }
@@ -211,15 +252,31 @@ impl Card for Action {
 
     fn cost(&self) -> u32 {
         match self {
+            Action::Cellar => 2,
+            Action::Chapel => 2,
             Action::Moat => 2,
+            Action::Harbinger => 3,
+            Action::Merchant => 3,
+            Action::Vassal => 3,
             Action::Village => 3,
+            Action::Workshop => 3,
+            Action::Bureaucrat => 4,
+            Action::Gardens => 4,
             Action::Militia => 4,
-            Action::Smithy => 4,
+            Action::Moneylender => 4,
+            Action::Poacher => 4,
             Action::Remodel => 4,
+            Action::Smithy => 4,
+            Action::ThroneRoom => 4,
+            Action::Bandit => 5,
+            Action::CouncilRoom => 5,
             Action::Festival => 5,
-            Action::Sentry => 5,
-            Action::Market => 5,
             Action::Laboratory => 5,
+            Action::Library => 5,
+            Action::Market => 5,
+            Action::Mine => 5,
+            Action::Sentry => 5,
+            Action::Witch => 5,
             Action::Artisan => 6,
         }
     }
@@ -249,7 +306,32 @@ create_card_map!(
     (Victory, Estate, Duchy, Province),
     (Curse, Curse),
     (
-        Action, Moat, Village, Militia, Smithy, Remodel, Festival, Sentry, Market, Laboratory,
+        Action,
+        Cellar,
+        Chapel,
+        Moat,
+        Harbinger,
+        Merchant,
+        Vassal,
+        Village,
+        Workshop,
+        Bureaucrat,
+        Gardens,
+        Militia,
+        Moneylender,
+        Poacher,
+        Remodel,
+        Smithy,
+        ThroneRoom,
+        Bandit,
+        CouncilRoom,
+        Festival,
+        Laboratory,
+        Library,
+        Market,
+        Mine,
+        Sentry,
+        Witch,
         Artisan
     )
 );
@@ -471,11 +553,9 @@ enum GameMove {
 
 #[derive(Debug, Clone)]
 enum GamePhase {
-    // Regular turn phases
     ActionPhase,
     TreasurePhase,
     BuyPhase,
-    // Will add more for special phases
 }
 
 struct Game {
@@ -690,31 +770,77 @@ impl Game {
 
     fn handle_action(&mut self, action: &Action) -> Result<(), GameError> {
         match action {
+            Action::Cellar => todo!(),
+            Action::Chapel => todo!(),
             Action::Moat => {
                 self.current_player().draw(2);
             }
+            Action::Harbinger => todo!(),
+            Action::Merchant => todo!(),
+            Action::Vassal => todo!(),
             Action::Village => {
                 self.current_player().actions += 2;
                 self.current_player().draw(1);
             }
+            Action::Workshop => todo!(),
+            Action::Bureaucrat => todo!(),
+            Action::Gardens => {
+                return Err(GameError::InvalidMove(
+                    "Cannot play Gardens as action".to_owned(),
+                ))
+            }
             Action::Militia => todo!(),
+            Action::Moneylender => todo!(),
+            Action::Poacher => todo!(),
+            Action::Remodel => todo!(),
             Action::Smithy => {
                 self.current_player().draw(3);
             }
-            Action::Remodel => todo!(),
-            Action::Festival => {
-                self.current_player().actions += 2;
+            Action::ThroneRoom => todo!(),
+            Action::Bandit => todo!(),
+            Action::CouncilRoom => {
                 self.current_player().buys += 1;
+                self.current_player().draw(4);
+
+                // Every other player draws one card
+                let current_player_index = self.curr_player_index;
+                for player in self.players.iter_mut() {
+                    if player.index != current_player_index {
+                        player.draw(1);
+                    }
+                }
             }
-            Action::Sentry => todo!(),
+            Action::Festival => {
+                self.current_player().buys += 1;
+                self.current_player().actions += 2;
+            }
+            Action::Laboratory => {
+                self.current_player().actions += 1;
+                self.current_player().draw(2);
+            }
+            Action::Library => todo!(),
             Action::Market => {
                 self.current_player().buys += 1;
                 self.current_player().actions += 1;
                 self.current_player().draw(1);
             }
-            Action::Laboratory => {
-                self.current_player().actions += 1;
+            Action::Mine => todo!(),
+            Action::Sentry => todo!(),
+            Action::Witch => {
                 self.current_player().draw(2);
+
+                // Starting from the left of the current player,
+                // each player will gain a curse if there's one left.
+                let mut cursed_player_index = (self.curr_player_index + 1) % self.players.len();
+                for _ in 0..self.players.len() - 1 {
+                    if self.supply.curses[Curse::Curse.name()] > 0 {
+                        self.players[cursed_player_index].add_to_discard(Box::new(Curse::Curse));
+                        if let Some(curse_count) = self.supply.curses.get_mut(Curse::Curse.name()) {
+                            *curse_count -= 1;
+                        }
+                    }
+                    cursed_player_index = (cursed_player_index + 1) % self.players.len();
+                }
             }
             Action::Artisan => todo!(),
         }
