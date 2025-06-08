@@ -486,6 +486,12 @@ impl Player {
     fn add_to_discard(&mut self, card: Box<dyn Card>) {
         self.discard.push(card);
     }
+
+    fn has_moat_in_hand(&self) -> bool {
+        self.hand
+            .iter()
+            .any(|card| card.card_type() == CardType::Action && card.name() == "Moat")
+    }
 }
 
 #[derive(Debug)]
@@ -833,7 +839,9 @@ impl Game {
                 // each player will gain a curse if there's one left.
                 let mut cursed_player_index = (self.curr_player_index + 1) % self.players.len();
                 for _ in 0..self.players.len() - 1 {
-                    if self.supply.curses[Curse::Curse.name()] > 0 {
+                    if self.supply.curses[Curse::Curse.name()] > 0
+                        && !self.players[cursed_player_index].has_moat_in_hand()
+                    {
                         self.players[cursed_player_index].add_to_discard(Box::new(Curse::Curse));
                         if let Some(curse_count) = self.supply.curses.get_mut(Curse::Curse.name()) {
                             *curse_count -= 1;
